@@ -2729,8 +2729,8 @@ function roundMacro(n) {
 }
 window.roundMacro = roundMacro;
 
-const VERSION = "v0.42.12";
-var BUILD = "2026-11-04 20:58";
+const VERSION = "v0.42.14";
+var BUILD = "2026-11-07 11:37";
 
 /* 通用弹层：给"不是我这份数据"的内容用。
    ⚠️ 别和 openDay 抢 —— 那个是画时间线用的，要绑图例、缩放、重绘。
@@ -3206,8 +3206,16 @@ let SESS = null;           // 多天使用段（api=sessions）
 let TELEMETRY = null;      // 边缘云与D1真实遥测（api=telemetry）
 let auxLoaded = false;
 let _telemetryFetching = false;
+/* 上一次 fetchTelemetry 是否真的拿到了云端数据。
+   ★ 2026-11-07：原来这个函数把异常全 catch 掉、永远正常返回，调用方
+   （manualRefreshTelemetry）无法区分成败，于是**不管成功失败都弹「已同步刷新」** ——
+   用户点了半天、数据一动不动，提示却说刷新成功。这个标志就是给调用方判真话用的。 */
+let _telemetryOk = false;
 
-/* 实时拉取最新 D1 遥测指标（支持强刷与静默刷新） */
+/* 实时拉取最新 D1 遥测指标（支持强刷与静默刷新）
+   ⚠️ 数据源粒度 20 分钟：遥测由电脑端同步链每轮 `sync_d1_telemetry()` 写进 KV，
+      页面这边"刷新"只能读到云端**最近一次上报**的值，读不到"此时此刻"的实时用量
+      （现场算要 Account Analytics 权限的 token，前端公开页绝不能持）。 */
 async function fetchTelemetry(force = false) {
   if (MOCK || SHARE) return TELEMETRY;
   if (_telemetryFetching && !force) return TELEMETRY;
@@ -3217,11 +3225,15 @@ async function fetchTelemetry(force = false) {
     const res = await apiGet(q3);
     if (res && !res.error) {
       TELEMETRY = res;
+      _telemetryOk = true;
       if (typeof render === "function" && typeof tab !== "undefined" && tab === "me") {
         render();
       }
+    } else {
+      _telemetryOk = false;
     }
   } catch (e) {
+    _telemetryOk = false;
     console.warn("[telemetry] 获取遥测失败:", e);
   } finally {
     _telemetryFetching = false;
@@ -5109,14 +5121,27 @@ async function weekTraces(days) {
   //    原来整周（含今天）命中后直接 return，等于把今天冻结在开屏那一份上；
   //    日视图那边 _dayCache 刷新了，周视图也永远拿不回来。
   //    现在命中缓存只复用历史行，当天行每次换成 _dayCache 的实时值（只拷 7 个引用，0 网络 0 重算）。
+  /* ★★ 2026-11-07：缓存里出现「空行」就不能整周命中。
+     「空」有两种来源，长得一模一样但语义相反：
+       · 后端明确返回 `traces: []` —— 那天真没有位置点，合法，可以缓存；
+       · 上次请求失败时 catch 里写的空数组 —— 这是**事故残留**，绝不能缓存。
+     以前两者不分（`if (_tracesCache[day])` 对 `[]` 判真），于是 11-06 D1 读额度
+     爆掉那晚写进去的空数组被当成"已有数据"，足迹周视图那一行从此永远空白，
+     连强刷都救不回来 —— 用户两次反馈「昨天数据依然缺失」就是这个。 */
   if (_weekTracesCache.has(weekKey)) {
     const cached = _weekTracesCache.get(weekKey);
-    if (todayIdx < 0) return cached;
-    const live = todayTracesLive();
-    if (!Array.isArray(live)) return cached;
-    const out = cached.slice();
-    out[todayIdx] = live;
-    return out;
+    const holeAt = cached.findIndex((t, i) =>
+      i !== todayIdx && days[i] <= TODAY && (!Array.isArray(t) || t.length === 0));
+    if (holeAt < 0) {
+      if (todayIdx < 0) return cached;
+      const live = todayTracesLive();
+      if (!Array.isArray(live)) return cached;
+      const out = cached.slice();
+      out[todayIdx] = live;
+      return out;
+    }
+    /* 有空行 → 不早返回，落到下面重拉。若 _tracesCache 里其实是「后端确认的空」，
+       下面的 allHit 分支会立刻收口，不会真的重复发包。 */
   }
 
   // 2. 同步全命中检测：若 7 天全部存在于 _tracesCache 或 _dayCache，0ms 纯内存同步直出！
@@ -5132,7 +5157,10 @@ async function weekTraces(days) {
     } else if (_tracesCache[day] === undefined) {
       if (typeof _dayCache !== "undefined" && _dayCache.has(day)) {
         const c = _dayCache.get(day);
-        if (c && c.data && Array.isArray(c.data.traces)) {
+        /* ★ 2026-11-07：只认**非空** traces。_dayCache 里的空数组有两处假来源：
+           getDay 从 IDB 恢复时的 `traces: cachedJson.traces || []`（IDB 缺字段就兜出空），
+           以及额度爆掉那晚存进去的残缺快照。拿它当命中 = 把假值固化进周视图。 */
+        if (c && c.data && Array.isArray(c.data.traces) && c.data.traces.length) {
           _tracesCache[day] = c.data.traces;
         } else {
           allHit = false;
@@ -5172,9 +5200,16 @@ async function weekTraces(days) {
     const p = (async () => {
       try {
         const j = await apiGet(new URLSearchParams({ k: KEY, api: "day", d: day }));
-        _tracesCache[day] = (j && j.traces) || [];
+        /* ★ 2026-11-07：只有后端**明确给了数组**才落缓存（空数组也算明确 —— 那天真没轨迹）。
+           拿不到数组（error 响应 / 半截响应 / 额度超限）就保持 undefined，留给下一轮重试。 */
+        if (j && Array.isArray(j.traces)) _tracesCache[day] = j.traces;
+        else delete _tracesCache[day];
       } catch (e) {
-        _tracesCache[day] = [];
+        /* ★★ 2026-11-07：失败**不许**写空数组。
+           写了就等于把一次网络抖动永久记成"这天没有轨迹" —— 上面第 122 行的
+           `if (_tracesCache[day] && ...)` 对 `[]` 判真，于是再也不会重拉。
+           11-06 那行空白就是这个坑。delete 掉才能让下一轮重新尝试。 */
+        delete _tracesCache[day];
       }
     })();
     _inFlightTraces.set(day, p);
@@ -13219,23 +13254,9 @@ function renderMeTab(v, isTabSwitch = false) {
   const cachedDaysCount = (typeof _dayCache !== "undefined" && _dayCache) ? ((_dayCache instanceof Map) ? _dayCache.size : Object.keys(_dayCache).length) : 0;
   const activeEndpointName = USING_SCF ? "腾讯云 SCF (国内免代理镜像)" : (IS_WORKERS_PAGE ? "Cloudflare Worker (直连)" : "Cloudflare Edge");
 
-  const formatTelemetryTime = (raw) => {
-    if (!raw) return "";
-    try {
-      const d = new Date(raw);
-      if (isNaN(d.getTime())) return String(raw).slice(0, 16);
-      const beijingMs = d.getTime() + (d.getTimezoneOffset() + 480) * 60000;
-      const bDate = new Date(beijingMs);
-      const y = bDate.getFullYear();
-      const m = String(bDate.getMonth() + 1).padStart(2, "0");
-      const day = String(bDate.getDate()).padStart(2, "0");
-      const h = String(bDate.getHours()).padStart(2, "0");
-      const min = String(bDate.getMinutes()).padStart(2, "0");
-      return `${y}-${m}-${day} ${h}:${min}`;
-    } catch (e) {
-      return String(raw).slice(0, 16);
-    }
-  };
+  /* ★ 2026-11-07：formatTelemetryTime 提到顶层（见文件尾部定义的同名函数）。
+     原来它是 renderMeTab 内部的 const，manualRefreshTelemetry 在顶层根本够不着 ——
+     刷新提示里要用"数据实际更新于几点"，只能提到全局。这里保留引用名不动调用点。 */
 
   const tel = (typeof TELEMETRY !== "undefined" && TELEMETRY) ? TELEMETRY : {
     rowsRead: 2572632,
@@ -13437,7 +13458,7 @@ function renderMeTab(v, isTabSwitch = false) {
           <div class="cap" style="display:flex;align-items:center;justify-content:space-between">
             <span><b>D1监控</b></span>
             <div style="display:inline-flex;align-items:center;gap:6px">
-              <span style="font-size:11px;color:var(--dim2);font-variant-numeric:tabular-nums;display:inline-flex;align-items:center;gap:4px">
+              <span style="font-size:11px;color:var(--dim2);font-variant-numeric:tabular-nums;display:inline-flex;align-items:center;gap:4px" title="遥测由电脑端同步链每 20 分钟上报一次，这里显示云端最近一次的值">
                 <svg aria-hidden="true" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="opacity:0.7"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
                 <span>更新于 ${formatTelemetryTime(tel.updatedAt) || "刚刚"}</span>
               </span>
@@ -14003,6 +14024,27 @@ async function clearLocalSnapshotCache() {
   render();
 }
 
+/* 把遥测里的 ISO 时间转成北京时间 "YYYY-MM-DD HH:MM"。
+   顶层函数声明（不是 const）—— renderMeTab 和 manualRefreshTelemetry 都要用，
+   放在 renderMeTab 内部时后者够不着（2026-11-07 踩到）。 */
+function formatTelemetryTime(raw) {
+  if (!raw) return "";
+  try {
+    const d = new Date(raw);
+    if (isNaN(d.getTime())) return String(raw).slice(0, 16);
+    const beijingMs = d.getTime() + (d.getTimezoneOffset() + 480) * 60000;
+    const bDate = new Date(beijingMs);
+    const y = bDate.getFullYear();
+    const m = String(bDate.getMonth() + 1).padStart(2, "0");
+    const day = String(bDate.getDate()).padStart(2, "0");
+    const h = String(bDate.getHours()).padStart(2, "0");
+    const min = String(bDate.getMinutes()).padStart(2, "0");
+    return `${y}-${m}-${day} ${h}:${min}`;
+  } catch (e) {
+    return String(raw).slice(0, 16);
+  }
+}
+
 async function manualRefreshTelemetry(btn) {
   if (btn) {
     btn.disabled = true;
@@ -14011,8 +14053,24 @@ async function manualRefreshTelemetry(btn) {
   }
   try {
     if (typeof fetchTelemetry === "function") {
+      /* ★★ 2026-11-07：以前这里无条件弹「D1 遥测已同步刷新」，
+         而 fetchTelemetry 内部把异常全吞了 —— 网络失败、口令错误、云端没响应，
+         用户看到的都是"刷新成功 + 数据没变"。用户原话「他说一刷新可是还是旧的数据」。
+         现在按真实结果分三种话术，第三种是常态：遥测由电脑端每 20 分钟上报一次，
+         刷新只能读到最近一次的值，绝不能谎称"刚刚的"。 */
+      const prevAt = TELEMETRY && TELEMETRY.updatedAt;
       await fetchTelemetry(true);
-      if (typeof showToast === "function") showToast("D1 遥测已同步刷新");
+      const t = TELEMETRY || {};
+      const at = formatTelemetryTime(t.updatedAt) || "未知";
+      if (typeof _telemetryOk !== "undefined" && !_telemetryOk) {
+        if (typeof showToast === "function") showToast("刷新失败：读不到云端遥测，稍后再试");
+      } else if (t.updatedAt && t.updatedAt !== prevAt) {
+        if (typeof showToast === "function") showToast("已刷新，遥测更新于 " + at);
+      } else {
+        if (typeof showToast === "function") {
+          showToast("云端遥测仍是 " + at + "（电脑端每 20 分钟同步一轮）");
+        }
+      }
     }
   } catch (e) {
     if (typeof showToast === "function") showToast("刷新遥测失败: " + e.message);
@@ -15405,7 +15463,10 @@ async function addQuickFoodLog(day, qidx, btnEl) {
   window._lastFoodLogMs = nowMs;
   const now = new Date(nowMs);
   const nowH = now.getHours();
-  const mType = nowH < 10 ? "早餐" : (nowH < 14 ? "午餐" : (nowH < 17 ? "下午茶" : (nowH < 21 ? "晚餐" : "夜宵")));
+  // ★ 2026-11-05：与后端统一（4-11 早餐 / 11-16 午餐 / 16-21 晚餐 / 其余夜宵）。
+  //   原来这里用 10/14/17 且会出现“下午茶”，而餐次选项里并没有下午茶，
+  //   导致 10 点多的早饭在弹窗里默认成午餐。
+  const mType = nowH < 11 ? "早餐" : (nowH < 16 ? "午餐" : (nowH < 21 ? "晚餐" : "夜宵"));
   const nowStamp = now.toISOString();
   const nowTime = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
   const uniqueUid = "fl_" + nowMs + "_" + Math.random().toString(36).slice(2, 6);
@@ -16397,9 +16458,9 @@ function _mealAddDefaultMeal(day) {
     : new Date(Date.now() + 8 * 3600e3).toISOString().slice(0, 10);
   if (day !== today) return "午餐";
   const h = new Date().getHours();
-  if (h < 10) return "早餐";
-  if (h < 14) return "午餐";
-  if (h < 17) return "加餐";
+  // ★ 2026-11-05：与后端统一（4-11 早餐 / 11-16 午餐 / 16-21 晚餐 / 其余夜宵）
+  if (h < 11) return "早餐";
+  if (h < 16) return "午餐";
   if (h < 21) return "晚餐";
   return "夜宵";
 }
