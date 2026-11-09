@@ -2729,8 +2729,8 @@ function roundMacro(n) {
 }
 window.roundMacro = roundMacro;
 
-const VERSION = "v0.43.3";
-var BUILD = "2026-11-07 11:37";
+const VERSION = "v0.43.4";
+var BUILD = "2026-11-09 13:35";
 
 /* 通用弹层：给"不是我这份数据"的内容用。
    ⚠️ 别和 openDay 抢 —— 那个是画时间线用的，要绑图例、缩放、重绘。
@@ -11686,10 +11686,17 @@ function splitDishIntoItems(dishStr) {
   const clean = dishStr.replace(/\(\s*标称精准\)/g, "").replace(/\s*[\(（][^\)）]*[\)）]\s*/g, " ").trim();
   const rawParts = clean.split(/[,，、+＋\n]+|\s{2,}|(?<=[\u4e00-\u9fa5\d])\s+(?=[\u4e00-\u9fa5])/);
   const items = [];
+  /* ★★★ 2026-11-09 修：`配` 只有在**连接两个菜名**时才是分隔符（「米饭配青菜」）。
+     它同时也是名词的一部分：「配菜 / 配料 / 配餐 / 配汤 / 配碟 / 套餐」。
+     事故原话是「为什么还有菜？？我记得我只有生菜，而且生菜和菜被归到同一组」——
+     菜名「生菜配菜」被下面这条 /配+/ 拆成了「生菜」+「菜」，页面上凭空多出一道
+     7 kcal 的「菜」，宏里录的却是一条 15 kcal 的「生菜配菜」，对不上账。
+     判据：整段含这些复合词就**整段不拆**（宁可少拆，也不能凭空造菜）。 */
+  const PEI_COMPOUND = /配(?:菜|料|餐|汤|碟|制|方|送|音|件|套|饰|比|色|偶|购|对)/;
   for (let part of rawParts) {
     part = part.trim();
     if (!part) continue;
-    if (part.includes("配") && !part.startsWith("配")) {
+    if (part.includes("配") && !part.startsWith("配") && !PEI_COMPOUND.test(part)) {
       const sub = part.split(/配+/).map(s => s.trim().replace(/^配/, '').trim()).filter(Boolean);
       items.push(...sub);
     } else {
