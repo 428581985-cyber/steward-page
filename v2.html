@@ -2729,8 +2729,8 @@ function roundMacro(n) {
 }
 window.roundMacro = roundMacro;
 
-const VERSION = "v0.43.4";
-var BUILD = "2026-11-09 13:35";
+const VERSION = "v0.43.5";
+var BUILD = "2026-11-11 10:51";
 
 /* 通用弹层：给"不是我这份数据"的内容用。
    ⚠️ 别和 openDay 抢 —— 那个是画时间线用的，要绑图例、缩放、重绘。
@@ -4536,20 +4536,37 @@ function dedupDietObj(diet) {
   let totCal = 0, p = 0, c = 0, f = 0;
   for (const m of diet.meals) {
     if (!m) continue;
-    const stdStamp = (() => {
-      try {
-        const ms = new Date(m.stamp || m.time).getTime();
-        return isNaN(ms) ? String(m.stamp || m.time || "") : String(ms);
-      } catch (_) {
-        return String(m.stamp || m.time || "");
-      }
-    })();
-    const dish = String(m.dish || "").trim();
-    const cal = Math.round(Number(m.calories) || 0);
-    const k = `${stdStamp}|${dish}|${cal}`;
+    const uid = (m.uid != null && String(m.uid).trim() !== "")
+      ? String(m.uid).trim()
+      : ((m.id != null && String(m.id).trim() !== "") ? String(m.id).trim() : null);
+    let k;
+    if (uid) {
+      // 拥有明确唯一标识 (uid/id) 时，仅在唯一标识相同时判定为重放并去重
+      k = `uid:${uid}`;
+    } else {
+      // 无唯一标识时的防呆兜底：仅在时间戳、餐别、菜名、热量、宏量及标题全部相同时才去重（杜绝无差别误杀同餐多份单品）
+      const stdStamp = (() => {
+        try {
+          const ms = new Date(m.stamp || m.time).getTime();
+          return isNaN(ms) ? String(m.stamp || m.time || "") : String(ms);
+        } catch (_) {
+          return String(m.stamp || m.time || "");
+        }
+      })();
+      const dish = String(m.dish || "").trim();
+      const cal = Math.round(Number(m.calories) || 0);
+      const meal = String(m.meal || "").trim();
+      const price = m.price != null ? String(m.price) : "";
+      const pVal = m.protein != null ? String(m.protein) : "";
+      const cVal = m.carbs != null ? String(m.carbs) : "";
+      const fVal = m.fat != null ? String(m.fat) : "";
+      const rawTitle = String(m.rawTitle || "").trim();
+      k = `raw:${stdStamp}|${meal}|${dish}|${cal}|${price}|${pVal}|${cVal}|${fVal}|${rawTitle}`;
+    }
     if (seen.has(k)) continue;
     seen.add(k);
     cleanMeals.push(m);
+    const cal = Math.round(Number(m.calories) || 0);
     totCal += cal;
     p += Number(m.protein) || 0;
     c += Number(m.carbs) || 0;
@@ -12293,15 +12310,24 @@ async function render() {
               const uniqueMeals = [];
               const seenMeals = new Set();
               for (const m of rawMeals) {
-                const normStamp = (() => {
-                  try {
-                    const ms = new Date(m.stamp || m.time).getTime();
-                    return isNaN(ms) ? (m.stamp || m.time || "") : String(ms);
-                  } catch (_) {
-                    return m.stamp || m.time || "";
-                  }
-                })();
-                const k = `${normStamp}|${m.meal || ''}|${m.dish || ''}|${m.calories || 0}|${m.price != null ? m.price : ''}|${m.protein || 0}|${m.carbs || 0}|${m.fat || 0}`;
+                if (!m) continue;
+                const uid = (m.uid != null && String(m.uid).trim() !== "")
+                  ? String(m.uid).trim()
+                  : ((m.id != null && String(m.id).trim() !== "") ? String(m.id).trim() : null);
+                let k;
+                if (uid) {
+                  k = `uid:${uid}`;
+                } else {
+                  const normStamp = (() => {
+                    try {
+                      const ms = new Date(m.stamp || m.time).getTime();
+                      return isNaN(ms) ? (m.stamp || m.time || "") : String(ms);
+                    } catch (_) {
+                      return m.stamp || m.time || "";
+                    }
+                  })();
+                  k = `raw:${normStamp}|${m.meal || ''}|${m.dish || ''}|${m.calories || 0}|${m.price != null ? m.price : ''}|${m.protein || 0}|${m.carbs || 0}|${m.fat || 0}|${m.rawTitle || ''}`;
+                }
                 if (seenMeals.has(k)) continue;
                 seenMeals.add(k);
                 uniqueMeals.push(m);
@@ -12326,15 +12352,24 @@ async function render() {
               const uniqueMeals = [];
               const seenMeals = new Set();
               for (const m of rawMeals) {
-                const normStamp = (() => {
-                  try {
-                    const ms = new Date(m.stamp || m.time).getTime();
-                    return isNaN(ms) ? (m.stamp || m.time || "") : String(ms);
-                  } catch (_) {
-                    return m.stamp || m.time || "";
-                  }
-                })();
-                const k = `${normStamp}|${m.meal || ''}|${m.dish || ''}|${m.calories || 0}|${m.price != null ? m.price : ''}|${m.protein || 0}|${m.carbs || 0}|${m.fat || 0}`;
+                if (!m) continue;
+                const uid = (m.uid != null && String(m.uid).trim() !== "")
+                  ? String(m.uid).trim()
+                  : ((m.id != null && String(m.id).trim() !== "") ? String(m.id).trim() : null);
+                let k;
+                if (uid) {
+                  k = `uid:${uid}`;
+                } else {
+                  const normStamp = (() => {
+                    try {
+                      const ms = new Date(m.stamp || m.time).getTime();
+                      return isNaN(ms) ? (m.stamp || m.time || "") : String(ms);
+                    } catch (_) {
+                      return m.stamp || m.time || "";
+                    }
+                  })();
+                  k = `raw:${normStamp}|${m.meal || ''}|${m.dish || ''}|${m.calories || 0}|${m.price != null ? m.price : ''}|${m.protein || 0}|${m.carbs || 0}|${m.fat || 0}|${m.rawTitle || ''}`;
+                }
                 if (seenMeals.has(k)) continue;
                 seenMeals.add(k);
                 uniqueMeals.push(m);
@@ -12479,8 +12514,8 @@ async function render() {
                             ${renderMacroColumns(m.protein, m.carbs, m.fat)}
                           </div>
                           <div class="dish-item-ops" style="display:inline-flex;align-items:center;gap:4px">
-                            <button onclick="openDietEditModal('${esc(m.stamp)}')" style="background:none;border:none;color:var(--dim);cursor:pointer;padding:2px;display:inline-flex;align-items:center;opacity:0.8;transition:color 0.15s" title="修改/微调"><svg aria-hidden="true" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg></button>
-                            <button onclick="deleteDietItem('${esc(m.stamp)}')" style="background:none;border:none;color:var(--dim);cursor:pointer;padding:2px;display:inline-flex;align-items:center;opacity:0.8;transition:color 0.15s" title="删除记录"><svg aria-hidden="true" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg></button>
+                            <button onclick="openDietEditModal('${esc(m.uid || m.stamp)}')" style="background:none;border:none;color:var(--dim);cursor:pointer;padding:2px;display:inline-flex;align-items:center;opacity:0.8;transition:color 0.15s" title="修改/微调"><svg aria-hidden="true" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg></button>
+                            <button onclick="deleteDietItem('${esc(m.uid || m.stamp)}')" style="background:none;border:none;color:var(--dim);cursor:pointer;padding:2px;display:inline-flex;align-items:center;opacity:0.8;transition:color 0.15s" title="删除记录"><svg aria-hidden="true" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg></button>
                           </div>
                         </div>
                       </div>
@@ -15470,13 +15505,65 @@ async function addQuickFoodLog(day, qidx, btnEl) {
   window._lastFoodLogMs = nowMs;
   const now = new Date(nowMs);
   const nowH = now.getHours();
-  // ★ 2026-11-05：与后端统一（4-11 早餐 / 11-16 午餐 / 16-21 晚餐 / 其余夜宵）。
-  //   原来这里用 10/14/17 且会出现“下午茶”，而餐次选项里并没有下午茶，
-  //   导致 10 点多的早饭在弹窗里默认成午餐。
-  const mType = nowH < 11 ? "早餐" : (nowH < 16 ? "午餐" : (nowH < 21 ? "晚餐" : "夜宵"));
-  const nowStamp = now.toISOString();
-  const nowTime = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-  const uniqueUid = "fl_" + nowMs + "_" + Math.random().toString(36).slice(2, 6);
+  const today = (typeof TODAY !== "undefined" && TODAY)
+    ? TODAY
+    : new Date(Date.now() + 8 * 3600e3).toISOString().slice(0, 10);
+  const isToday = (day === today);
+
+  const existingMeals = (CUR_DAY_DATA && CUR_DAY_DATA.day === day && CUR_DAY_DATA.diet && Array.isArray(CUR_DAY_DATA.diet.meals))
+    ? CUR_DAY_DATA.diet.meals
+    : [];
+  const hasBreakfast = existingMeals.some(m => (typeof getMealChar === "function" ? getMealChar(m.meal) : (m.meal || "").charAt(0)) === "早");
+  const hasLunch = existingMeals.some(m => (typeof getMealChar === "function" ? getMealChar(m.meal) : (m.meal || "").charAt(0)) === "午");
+  const hasDinner = existingMeals.some(m => (typeof getMealChar === "function" ? getMealChar(m.meal) : (m.meal || "").charAt(0)) === "晚");
+
+  // 典型早点单品特征（牛奶、面包、鸡蛋、水煮蛋、包子、豆浆、咖啡等）
+  const isBreakfastFood = /早|蛋|奶|面包|包子|油条|豆浆|燕麦|咖啡|吐司|麦片|粥/.test(dishName);
+
+  let mType;
+  let nowTime;
+  if (!isToday) {
+    // 历史日期查看补记：优先根据当天已录餐别与食物特征精准推断，杜绝将早点硬性记为晚餐
+    if (isBreakfastFood && !hasBreakfast) {
+      mType = "早餐";
+      nowTime = "08:30";
+    } else if (!hasBreakfast) {
+      mType = "早餐";
+      nowTime = "08:30";
+    } else if (!hasLunch) {
+      mType = "午餐";
+      nowTime = "12:30";
+    } else if (!hasDinner) {
+      mType = "晚餐";
+      nowTime = "18:30";
+    } else {
+      mType = "加餐";
+      nowTime = "15:30";
+    }
+  } else {
+    // 今日实时记账：结合当前时段与食物特征智能推断
+    // ★ 关键修复：傍晚快捷点击时，若当天尚无早餐且为典型早点单品（牛奶、面包、鸡蛋等），推断为补记早餐而非硬性判为晚餐
+    const isBreakfastCandidate = isBreakfastFood && (!hasBreakfast || (!hasLunch && !hasDinner));
+    if (nowH < 11 || isBreakfastCandidate) {
+      mType = "早餐";
+      nowTime = (nowH < 11) ? now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : "08:30";
+    } else if (nowH < 16) {
+      mType = "午餐";
+      nowTime = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    } else if (nowH < 21) {
+      mType = "晚餐";
+      nowTime = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    } else {
+      mType = "夜宵";
+      nowTime = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    }
+  }
+
+  // 严格落在当前查看日期 day，并支持连续点击单调递增
+  const sec = String(Math.floor((nowMs / 1000) % 60)).padStart(2, "0");
+  const stampDt = new Date(`${day}T${nowTime}:${sec}+08:00`);
+  const nowStamp = (!isNaN(stampDt.getTime())) ? stampDt.toISOString() : `${day}T${nowTime}:00+08:00`;
+  const uniqueUid = "fl_" + nowMs + "_" + Math.random().toString(36).slice(2, 8) + "_" + Math.floor(Math.random() * 10000).toString(16);
 
   // 1. 0ms 瞬间 Toast 弹出与即时响应 (Zero-Emoji)
   showToast(`已记录 ${dishName} +${q.calories} kcal`);
@@ -15562,10 +15649,55 @@ async function addQuickFoodLog(day, qidx, btnEl) {
       // 食物列表置顶追加新单品节点 container.appendChild(newRow)
       let container = document.getElementById("diet-meals-list");
       if (!container) {
-        const emptyEl = document.querySelector(".empty");
+        // 精准靶向：仅在饮食卡片内部查找 .empty，绝不能用全站 document.querySelector(".empty") 误中手环/睡眠卡片
+        const dietCard = (btn && btn.closest(".card")) ||
+          Array.from(document.querySelectorAll(".card")).find(c =>
+            c.querySelector("#m-diet-kcal") ||
+            c.querySelector("#diet-meals-count") ||
+            (c.textContent && (c.textContent.includes("饮食与能量") || c.textContent.includes("常用单品:")))
+          );
+        const emptyEl = dietCard ? dietCard.querySelector(".empty") : null;
         if (emptyEl && emptyEl.closest(".card")) {
           const parentCard = emptyEl.parentElement;
           emptyEl.remove();
+
+          // 若此前为完全空白天，动态补齐顶部卡路里宏量指标与进度条容器
+          if (!document.querySelector("#m-diet-kcal")) {
+            const metricsWrap = document.createElement("div");
+            metricsWrap.className = "g4";
+            metricsWrap.innerHTML = `
+              <div id="m-diet-kcal" class="m interactive" title="摄入热量"><span class="m-dot"></span><div class="v">${CUR_DAY_DATA.diet.totalKcal}<u> kcal</u></div><div class="l">摄入热量</div></div>
+              <div id="m-diet-p" class="m interactive" title="蛋白质"><span class="m-dot"></span><div class="v">${CUR_DAY_DATA.diet.macros.protein}<u> g</u></div><div class="l">蛋白质</div></div>
+              <div id="m-diet-c" class="m interactive" title="碳水化合物"><span class="m-dot"></span><div class="v">${CUR_DAY_DATA.diet.macros.carbs}<u> g</u></div><div class="l">碳水化合物</div></div>
+              <div id="m-diet-f" class="m interactive" title="脂肪"><span class="m-dot"></span><div class="v">${CUR_DAY_DATA.diet.macros.fat}<u> g</u></div><div class="l">脂肪</div></div>
+            `;
+            const hbarsWrap = document.createElement("div");
+            hbarsWrap.className = "hbars";
+            hbarsWrap.style.marginTop = "12px";
+            const curP = CUR_DAY_DATA.diet.macros.protein || 0;
+            const curC = CUR_DAY_DATA.diet.macros.carbs || 0;
+            const curF = CUR_DAY_DATA.diet.macros.fat || 0;
+            const pPct = Math.round((curP / 130) * 100);
+            const cPct = Math.round((curC / 160) * 100);
+            const fPct = Math.round((curF / 60) * 100);
+            hbarsWrap.innerHTML = `
+              <div class="hb" style="position:relative;overflow:hidden"><i style="width:${Math.min(100, pPct)}%;background:var(--soft)"></i><span style="position:relative;z-index:2"><b>蛋白质</b><u>${curP}g / 130g<em>${pPct}%</em></u></span></div>
+              <div class="hb" style="position:relative;overflow:hidden"><i style="width:${Math.min(100, cPct)}%;background:var(--warn)"></i><span style="position:relative;z-index:2"><b>碳水化合物</b><u>${curC}g / 160g<em>${cPct}%</em></u></span></div>
+              <div class="hb" style="position:relative;overflow:hidden"><i style="width:${Math.min(100, fPct)}%;background:var(--flow)"></i><span style="position:relative;z-index:2"><b>脂肪</b><u>${curF}g / 60g<em>${fPct}%</em></u></span></div>
+            `;
+            parentCard.appendChild(metricsWrap);
+            parentCard.appendChild(hbarsWrap);
+          }
+
+          // 补齐就餐流水数量指示条
+          const countWrap = document.createElement("div");
+          countWrap.style.cssText = "display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;margin-top:14px;border-top:1px solid var(--border);padding-top:10px;font-size:12px;color:var(--dim)";
+          countWrap.innerHTML = `
+            <span id="diet-meals-count"><b>1</b> 条就餐流水</span>
+            <button onclick="openMealAddModal()" style="display:inline-flex;align-items:center;gap:3px;padding:3px 9px;background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:999px;color:var(--fg);font-size:11.5px;font-weight:600;cursor:pointer" title="忘记拍照时可以在这里补记"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>补记</button>
+          `;
+          parentCard.appendChild(countWrap);
+
           container = document.createElement("div");
           container.id = "diet-meals-list";
           parentCard.appendChild(container);
@@ -15573,7 +15705,7 @@ async function addQuickFoodLog(day, qidx, btnEl) {
       }
 
       if (container) {
-        const mChar = mType.charAt(0);
+        const mChar = typeof getMealChar === "function" ? getMealChar(mType) : mType.charAt(0);
         const themeMap = {
           "早": { color: "var(--soft, #10b981)", bg: "rgba(16,185,129,0.15)" },
           "午": { color: "var(--flow, #38bdf8)", bg: "rgba(56,189,248,0.15)" },
@@ -15581,59 +15713,145 @@ async function addQuickFoodLog(day, qidx, btnEl) {
           "加": { color: "var(--warn, #f59e0b)", bg: "rgba(245,158,11,0.15)" },
           "夜": { color: "#ec4899", bg: "rgba(236,72,153,0.15)" }
         };
-        const theme = themeMap[mChar] || { color: "var(--fg)", bg: "rgba(255,255,255,0.08)" };
+        const theme = (typeof getMealTheme === "function" ? getMealTheme(mChar) : null) || themeMap[mChar] || { color: "var(--fg)", bg: "rgba(255,255,255,0.08)" };
 
-        const newRow = document.createElement("div");
-        newRow.style.cssText = "display:flex;align-items:stretch;background:rgba(255,255,255,0.02);border:1px solid rgba(255,255,255,0.06);border-radius:8px;margin-bottom:8px;overflow:hidden;animation:fadeIn 0.24s ease";
-        newRow.innerHTML = `
-          <div style="width:96px;min-width:96px;background:rgba(255,255,255,0.02);border-right:1px solid rgba(255,255,255,0.06);display:flex;flex-direction:column;align-items:center;justify-content:center;padding:8px 6px;text-align:center;box-sizing:border-box">
-            <div style="display:flex;align-items:center;justify-content:center;gap:4px">
-              <span style="display:inline-block;padding:1.5px 6px;border-radius:4px;background:${theme.bg};color:${theme.color};font-size:11.5px;font-weight:700;line-height:1.2">
-                ${mChar}
+        // 查找已有同餐别卡片（平滑就地追加至已有餐别，而非裸插入孤立大卡片）
+        let existingGroupCard = null;
+        for (const card of container.children) {
+          const bSpan = card.children[0]?.querySelector("span");
+          if (bSpan && bSpan.textContent.trim() === mChar) {
+            existingGroupCard = card;
+            break;
+          }
+        }
+
+        if (existingGroupCard && existingGroupCard.children.length >= 2) {
+          // 场景 A：追加到已有餐别的大卡片中
+          const rightContainer = existingGroupCard.children[1];
+          const prevLastRow = rightContainer.lastElementChild;
+          if (prevLastRow) {
+            prevLastRow.style.borderBottom = "1px dashed rgba(255,255,255,0.08)";
+            prevLastRow.style.marginBottom = "4px";
+          }
+
+          const dishItemEl = document.createElement("div");
+          dishItemEl.className = "dish-item-row";
+          dishItemEl.style.animation = "fadeIn 0.24s ease";
+          dishItemEl.innerHTML = `
+            <div class="dish-item-top">
+              <div class="dish-item-title">
+                <span style="color:var(--fg);font-size:13.5px;font-weight:700;display:inline-flex;align-items:center;gap:6px">
+                  <span>${typeof esc === "function" ? esc(dishName) : dishName}</span>
+                  <span class="dish-kcal" style="font-size:12px;font-weight:600;color:var(--dim);font-variant-numeric:tabular-nums;margin-left:2px">${q.calories || 0} kcal</span>
+                  ${price != null ? `<span style="color:var(--alert,#f87171);font-weight:700;font-size:12px">￥${price}</span>` : ''}
+                </span>
+              </div>
+              <div class="dish-macros-block">
+                <div class="dish-macros" style="display:inline-flex;align-items:center;gap:12px;font-variant-numeric:tabular-nums;font-size:12px;font-weight:600;margin:0 8px">
+                  <span style="color:#60a5fa;display:inline-flex;align-items:baseline;gap:2px">蛋 <span style="font-size:13px;font-weight:700">${q.protein || 0}g</span></span>
+                  <span style="color:#fbbf24;display:inline-flex;align-items:baseline;gap:2px">碳 <span style="font-size:13px;font-weight:700">${q.carbs || 0}g</span></span>
+                  <span style="color:#f472b6;display:inline-flex;align-items:baseline;gap:2px">脂 <span style="font-size:13px;font-weight:700">${q.fat || 0}g</span></span>
+                </div>
+              </div>
+              <div class="dish-item-ops" style="display:inline-flex;align-items:center;gap:4px">
+                <button onclick="openDietEditModal('${esc(uniqueUid || nowStamp)}')" style="background:none;border:none;color:var(--dim);cursor:pointer;padding:2px;display:inline-flex;align-items:center;opacity:0.8;transition:color 0.15s" title="修改/微调"><svg aria-hidden="true" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg></button>
+                <button onclick="deleteDietItem('${esc(uniqueUid || nowStamp)}')" style="background:none;border:none;color:var(--dim);cursor:pointer;padding:2px;display:inline-flex;align-items:center;opacity:0.8;transition:color 0.15s" title="删除记录"><svg aria-hidden="true" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg></button>
+              </div>
+            </div>
+          `;
+          rightContainer.appendChild(dishItemEl);
+
+          // 刷新已有大卡片左侧合并框统计小计（整餐总价、总热量、三色营养素）
+          const grpMeals = CUR_DAY_DATA.diet.meals.filter(m => (typeof getMealChar === "function" ? getMealChar(m.meal) : (m.meal || "").charAt(0)) === mChar);
+          let grpKcal = grpMeals.reduce((s, m) => s + (Number(m.calories) || 0), 0);
+          let grpP = grpMeals.reduce((s, m) => s + (Number(m.protein) || 0), 0);
+          let grpC = grpMeals.reduce((s, m) => s + (Number(m.carbs) || 0), 0);
+          let grpF = grpMeals.reduce((s, m) => s + (Number(m.fat) || 0), 0);
+          let grpPrice = grpMeals.reduce((s, m) => s + (Number(m.price) || 0), 0);
+          grpP = typeof roundMacro === "function" ? roundMacro(grpP) : Math.round(grpP * 10) / 10;
+          grpC = typeof roundMacro === "function" ? roundMacro(grpC) : Math.round(grpC * 10) / 10;
+          grpF = typeof roundMacro === "function" ? roundMacro(grpF) : Math.round(grpF * 10) / 10;
+
+          const leftBox = existingGroupCard.children[0];
+          const spans = leftBox.querySelectorAll("span");
+          if (spans.length >= 2) {
+            spans[1].textContent = `￥${Number(grpPrice.toFixed(1))}`;
+          }
+          if (spans.length >= 3) {
+            spans[2].innerHTML = `${grpKcal} <small style="font-size:9.5px;font-weight:500;color:var(--dim)">kcal</small>`;
+          }
+          const macroBox = leftBox.querySelector("div[style*='font-size:10px']");
+          if (macroBox) {
+            macroBox.innerHTML = `
+              <span style="color:#60a5fa" title="蛋白质">P ${grpP}</span>
+              <span style="color:#fbbf24" title="碳水">C ${grpC}</span>
+              <span style="color:#f472b6" title="脂肪">F ${grpF}</span>
+            `;
+          }
+        } else {
+          // 场景 B：该餐别尚无大卡片，新建符合规范的餐别大卡片并按时间倒序插入
+          const newRow = document.createElement("div");
+          newRow.style.cssText = "display:flex;align-items:stretch;background:rgba(255,255,255,0.02);border:1px solid rgba(255,255,255,0.06);border-radius:8px;margin-bottom:8px;overflow:hidden;animation:fadeIn 0.24s ease";
+          newRow.innerHTML = `
+            <div style="width:96px;min-width:96px;background:rgba(255,255,255,0.02);border-right:1px solid rgba(255,255,255,0.06);display:flex;flex-direction:column;align-items:center;justify-content:center;padding:8px 6px;text-align:center;box-sizing:border-box">
+              <div style="display:flex;align-items:center;justify-content:center;gap:4px">
+                <span style="display:inline-block;padding:1.5px 6px;border-radius:4px;background:${theme.bg};color:${theme.color};font-size:11.5px;font-weight:700;line-height:1.2">
+                  ${mChar}
+                </span>
+                <span style="font-size:10.5px;color:var(--dim2);font-variant-numeric:tabular-nums;font-weight:600">${nowTime}</span>
+              </div>
+              <span style="font-size:11.5px;font-weight:700;color:var(--alert,#f87171);line-height:1.2;font-variant-numeric:tabular-nums;margin-top:2px">
+                ${price != null ? `￥${Number(price.toFixed(1))}` : '￥0'}
               </span>
-              <span style="font-size:10.5px;color:var(--dim2);font-variant-numeric:tabular-nums;font-weight:600">${nowTime}</span>
+              <span style="font-size:11px;font-weight:700;color:var(--fg);font-variant-numeric:tabular-nums;margin-top:2px">
+                ${q.calories || 0} <small style="font-size:9.5px;font-weight:500;color:var(--dim)">kcal</small>
+              </span>
+              <div style="font-size:10px;font-variant-numeric:tabular-nums;color:var(--dim2);display:flex;align-items:center;justify-content:center;gap:3px;margin-top:2px">
+                <span style="color:#60a5fa" title="蛋白质">P ${q.protein || 0}</span>
+                <span style="color:#fbbf24" title="碳水">C ${q.carbs || 0}</span>
+                <span style="color:#f472b6" title="脂肪">F ${q.fat || 0}</span>
+              </div>
             </div>
-            <span style="font-size:11.5px;font-weight:700;color:var(--alert,#f87171);line-height:1.2;font-variant-numeric:tabular-nums;margin-top:2px">
-              ${price != null ? `￥${price}` : ''}
-            </span>
-            <span style="font-size:11px;font-weight:700;color:var(--fg);font-variant-numeric:tabular-nums;margin-top:2px">
-              ${q.calories} <small style="font-size:9.5px;font-weight:500;color:var(--dim)">kcal</small>
-            </span>
-            <div style="font-size:10px;font-variant-numeric:tabular-nums;color:var(--dim2);display:flex;align-items:center;justify-content:center;gap:3px;margin-top:2px">
-              <span style="color:#60a5fa" title="蛋白质">P ${q.protein || 0}</span>
-              <span style="color:#fbbf24" title="碳水">C ${q.carbs || 0}</span>
-              <span style="color:#f472b6" title="脂肪">F ${q.fat || 0}</span>
-            </div>
-          </div>
-          <div style="flex:1;min-width:0;display:flex;flex-direction:column;justify-content:center;padding:6px 10px;box-sizing:border-box">
-            <div class="dish-item-row">
-              <div class="dish-item-top">
-                <div class="dish-item-title">
-                  <span style="color:var(--fg);font-size:13.5px;font-weight:700;display:inline-flex;align-items:center;gap:6px">
-                    <span>${typeof esc === "function" ? esc(dishName) : dishName}</span>
-                    <span class="dish-kcal" style="font-size:12px;font-weight:600;color:var(--dim);font-variant-numeric:tabular-nums;margin-left:2px">${q.calories || 0} kcal</span>
-                    ${price != null ? `<span style="color:var(--alert,#f87171);font-weight:700;font-size:12px">￥${price}</span>` : ''}
-                  </span>
-                </div>
-                <div class="dish-macros-block">
-                  <div class="dish-macros" style="display:inline-flex;align-items:center;gap:12px;font-variant-numeric:tabular-nums;font-size:12px;font-weight:600;margin:0 8px">
-                    <span style="color:#60a5fa;display:inline-flex;align-items:baseline;gap:2px">蛋 <span style="font-size:13px;font-weight:700">${q.protein || 0}g</span></span>
-                    <span style="color:#fbbf24;display:inline-flex;align-items:baseline;gap:2px">碳 <span style="font-size:13px;font-weight:700">${q.carbs || 0}g</span></span>
-                    <span style="color:#f472b6;display:inline-flex;align-items:baseline;gap:2px">脂 <span style="font-size:13px;font-weight:700">${q.fat || 0}g</span></span>
+            <div style="flex:1;min-width:0;display:flex;flex-direction:column;justify-content:center;padding:6px 10px;box-sizing:border-box">
+              <div class="dish-item-row">
+                <div class="dish-item-top">
+                  <div class="dish-item-title">
+                    <span style="color:var(--fg);font-size:13.5px;font-weight:700;display:inline-flex;align-items:center;gap:6px">
+                      <span>${typeof esc === "function" ? esc(dishName) : dishName}</span>
+                      <span class="dish-kcal" style="font-size:12px;font-weight:600;color:var(--dim);font-variant-numeric:tabular-nums;margin-left:2px">${q.calories || 0} kcal</span>
+                      ${price != null ? `<span style="color:var(--alert,#f87171);font-weight:700;font-size:12px">￥${price}</span>` : ''}
+                    </span>
                   </div>
-                </div>
-                <div class="dish-item-ops" style="display:inline-flex;align-items:center;gap:4px">
-                  <button onclick="openDietEditModal('${nowStamp}')" style="background:none;border:none;color:var(--dim);cursor:pointer;padding:2px;display:inline-flex;align-items:center;opacity:0.8;transition:color 0.15s" title="修改/微调"><svg aria-hidden="true" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg></button>
-                  <button onclick="deleteDietItem('${nowStamp}')" style="background:none;border:none;color:var(--dim);cursor:pointer;padding:2px;display:inline-flex;align-items:center;opacity:0.8;transition:color 0.15s" title="删除记录"><svg aria-hidden="true" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg></button>
+                  <div class="dish-macros-block">
+                    <div class="dish-macros" style="display:inline-flex;align-items:center;gap:12px;font-variant-numeric:tabular-nums;font-size:12px;font-weight:600;margin:0 8px">
+                      <span style="color:#60a5fa;display:inline-flex;align-items:baseline;gap:2px">蛋 <span style="font-size:13px;font-weight:700">${q.protein || 0}g</span></span>
+                      <span style="color:#fbbf24;display:inline-flex;align-items:baseline;gap:2px">碳 <span style="font-size:13px;font-weight:700">${q.carbs || 0}g</span></span>
+                      <span style="color:#f472b6;display:inline-flex;align-items:baseline;gap:2px">脂 <span style="font-size:13px;font-weight:700">${q.fat || 0}g</span></span>
+                    </div>
+                  </div>
+                  <div class="dish-item-ops" style="display:inline-flex;align-items:center;gap:4px">
+                    <button onclick="openDietEditModal('${esc(uniqueUid || nowStamp)}')" style="background:none;border:none;color:var(--dim);cursor:pointer;padding:2px;display:inline-flex;align-items:center;opacity:0.8;transition:color 0.15s" title="修改/微调"><svg aria-hidden="true" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg></button>
+                    <button onclick="deleteDietItem('${esc(uniqueUid || nowStamp)}')" style="background:none;border:none;color:var(--dim);cursor:pointer;padding:2px;display:inline-flex;align-items:center;opacity:0.8;transition:color 0.15s" title="删除记录"><svg aria-hidden="true" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg></button>
+                  </div>
                 </div>
               </div>
             </div>
-          </div>
-        `;
-        if (container.firstChild) {
-          container.insertBefore(newRow, container.firstChild);
-        } else {
-          container.appendChild(newRow);
+          `;
+          const MEAL_ORDER = { "夜": 5, "晚": 4, "加": 3, "午": 2, "早": 1 };
+          const myOrder = MEAL_ORDER[mChar] || 0;
+          let inserted = false;
+          for (const child of container.children) {
+            const cChar = child.children[0]?.querySelector("span")?.textContent.trim() || "";
+            const cOrder = MEAL_ORDER[cChar] || 0;
+            if (myOrder > cOrder) {
+              container.insertBefore(newRow, child);
+              inserted = true;
+              break;
+            }
+          }
+          if (!inserted) {
+            container.appendChild(newRow);
+          }
         }
 
         const countEl = document.getElementById("diet-meals-count");
@@ -15659,6 +15877,7 @@ async function addQuickFoodLog(day, qidx, btnEl) {
     body: JSON.stringify({
       day: day,
       stamp: nowStamp,
+      meal: mType,
       dish: dishName,
       calories: q.calories,
       price: price,
@@ -15845,7 +16064,7 @@ function openDietEditModal(stamp, subIndex = null) {
   dietEditSubIndex = (subIndex != null && subIndex >= 0) ? Number(subIndex) : null;
   dietEditAllocated = null;
   if (!CUR_DAY_DATA || !CUR_DAY_DATA.diet || !CUR_DAY_DATA.diet.meals) return;
-  const m = CUR_DAY_DATA.diet.meals.find(x => x.stamp === stamp);
+  const m = CUR_DAY_DATA.diet.meals.find(x => (x.uid && x.uid === stamp) || x.stamp === stamp);
   if (!m) return;
 
   const subItems = (typeof splitDishIntoItems === "function") ? splitDishIntoItems(m.dish) : [m.dish];
@@ -16046,7 +16265,9 @@ async function saveDietEdit() {
     const baseMs = new Date(newStamp).getTime();
     const splitItems = dietEditAllocated.map((it, idx) => {
       const itStamp = (idx === 0) ? newStamp : new Date(baseMs - idx * 1000).toISOString();
+      const itemUid = "sp_" + Date.now() + "_" + idx + "_" + Math.random().toString(36).slice(2, 8);
       return {
+        uid: itemUid,
         stamp: itStamp,
         meal: meal,
         dish: it.name,
@@ -16084,6 +16305,7 @@ async function saveDietEdit() {
     }
 
     closeDietEditModal();
+    if (typeof invalidateDayCache === "function") invalidateDayCache(theDay);
     try { await render(); } catch (_) {}
 
     // 2. 后台原子化分裂入库
@@ -16111,7 +16333,7 @@ async function saveDietEdit() {
   const note = (dietEditBaseNutr && dietEditBaseNutr.note) || "";
 
   if (typeof CUR_DAY_DATA !== "undefined" && CUR_DAY_DATA && CUR_DAY_DATA.diet && Array.isArray(CUR_DAY_DATA.diet.meals)) {
-    const target = CUR_DAY_DATA.diet.meals.find(x => x.stamp === oldStamp);
+    const target = CUR_DAY_DATA.diet.meals.find(x => (x.uid && x.uid === oldStamp) || x.stamp === oldStamp);
     if (target) {
       target.stamp = newStamp;
       if (newTimeStr) target.time = newTimeStr;
@@ -16124,6 +16346,9 @@ async function saveDietEdit() {
       target.protein = p;
       target.carbs = c;
       target.fat = f;
+      if (!target.uid) {
+        target.uid = "ed_" + Date.now() + "_" + Math.random().toString(36).slice(2, 8);
+      }
       CUR_DAY_DATA.diet.meals.sort((a, b) => String(b.stamp || "").localeCompare(String(a.stamp || "")));
       CUR_DAY_DATA.diet.totalKcal = CUR_DAY_DATA.diet.meals.reduce((sum, m) => sum + (m.calories || 0), 0);
       CUR_DAY_DATA.diet.macros = {
@@ -16143,6 +16368,7 @@ async function saveDietEdit() {
     }
   }
   closeDietEditModal();
+  if (typeof invalidateDayCache === "function") invalidateDayCache(theDay);
   try { await render(); } catch (_) {}
 
   try {
@@ -16160,7 +16386,8 @@ async function saveDietEdit() {
         note: note,
         protein: p,
         carbs: c,
-        fat: f
+        fat: f,
+        uid: target ? target.uid : undefined
       })
     });
     const jj = await r.json().catch(() => null);
@@ -16210,7 +16437,7 @@ async function deleteDietItem(stamp, subIndex = null) {
 
   const targetMs = new Date(stamp).getTime();
   const m = (CUR_DAY_DATA && CUR_DAY_DATA.diet && Array.isArray(CUR_DAY_DATA.diet.meals))
-    ? CUR_DAY_DATA.diet.meals.find(x => x.stamp === stamp || (!isNaN(targetMs) && new Date(x.stamp).getTime() === targetMs))
+    ? CUR_DAY_DATA.diet.meals.find(x => (x.uid && x.uid === stamp) || x.stamp === stamp || (!isNaN(targetMs) && new Date(x.stamp).getTime() === targetMs))
     : null;
 
   if (!m) {
@@ -16282,6 +16509,8 @@ async function deleteDietItem(stamp, subIndex = null) {
     dishDisplayName = m.dish || "饮食记录";
 
     CUR_DAY_DATA.diet.meals = CUR_DAY_DATA.diet.meals.filter(x => {
+      if (m.uid && x.uid) return x.uid !== m.uid;
+      if (x === m) return false;
       if (x.stamp === stamp || x.stamp === m.stamp) return false;
       if (!isNaN(targetMs) && new Date(x.stamp).getTime() === targetMs) return false;
       return true;
