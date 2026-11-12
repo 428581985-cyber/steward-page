@@ -2730,7 +2730,7 @@ function roundMacro(n) {
 window.roundMacro = roundMacro;
 
 const VERSION = "v0.43.5";
-var BUILD = "2026-11-11 10:51";
+var BUILD = "2026-11-12 09:30";
 
 /* 通用弹层：给"不是我这份数据"的内容用。
    ⚠️ 别和 openDay 抢 —— 那个是画时间线用的，要绑图例、缩放、重绘。
@@ -14178,6 +14178,19 @@ function bindChat() {}
 // ★ 2026-10-07：手环已支持云端按需同步，页头状态标签已彻底移除，免去用户滞后焦虑
 function renderSrcTag() {}
 
+/* ★★★ 2026-11-12 修 TDZ 崩溃（用户实测「看板渲染遇到非预期异常」的根因）：
+   本文件底部第 112 行的 IIFE 里**同步**调用了 `triggerOnDemandBandSync()`。
+   `function` 声明会提升，所以那一行能调到；但它函数体里读的 `_isBandSyncing`
+   原先用 `let` 声明在 200 多行之后 ⇒ 读取时仍在 TDZ ⇒
+   `ReferenceError: Cannot access '_isBandSyncing' before initialization`。
+   后果不只是报错：这个异常在 IIFE 里把**后面的初始化整段打断** ——
+   `prefetchIdle()`、`prefetchAdjacentDays()`、`hydrateLiveBandData()`、
+   `syncCoursesFromGoogleCalendar()` 全都没跑，页面看上去就是"数据不刷新/渲染中断"。
+   修法：把声明提到使用之前（文件顶部）。
+   ⚠️ 同类坑本项目已踩过第二次（`_inFlightQuickLogs`，见 03_api.js 里的注释），
+      规矩：**任何被顶层代码同步调用的函数，其内部读取的模块级 `let/const` 都必须声明在调用点之前。** */
+let _isBandSyncing = false;
+
 /* Ctrl + 滚轮 缩放时间轴：以鼠标指针正对的时间刻度为绝对物理锚点 */
 document.addEventListener("wheel", (e) => {
   if (!(e.ctrlKey || e.metaKey)) return;
@@ -14393,7 +14406,7 @@ window.hydrateLiveBandData = hydrateLiveBandData;
 
 
 // ★ 2026-10-07 / 2026-10-16 修复：按需手环云同步（极速 SWR 模式，60 秒节流 / 支持 force 强刷，绝不阻塞开屏）
-let _isBandSyncing = false;
+// ⚠️ 声明已提到文件顶部（2026-11-12 TDZ 修复），这里不要再写 `let _isBandSyncing`。
 function triggerOnDemandBandSync(options = {}) {
   if (MOCK) return;
   const isForce = Boolean(options && (options.force || options.isForce));
