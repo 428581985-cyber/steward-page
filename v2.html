@@ -2729,8 +2729,8 @@ function roundMacro(n) {
 }
 window.roundMacro = roundMacro;
 
-const VERSION = "v0.43.5";
-var BUILD = "2026-11-12 09:30";
+const VERSION = "v0.43.6";
+var BUILD = "2026-11-16 14:12";
 
 /* 通用弹层：给"不是我这份数据"的内容用。
    ⚠️ 别和 openDay 抢 —— 那个是画时间线用的，要绑图例、缩放、重绘。
@@ -4532,6 +4532,7 @@ function dedupDietObj(diet) {
   if (!diet || typeof diet !== "object") return diet;
   if (!Array.isArray(diet.meals) || diet.meals.length === 0) return diet;
   const seen = new Set();
+  const rawCounts = new Map();
   const cleanMeals = [];
   let totCal = 0, p = 0, c = 0, f = 0;
   for (const m of diet.meals) {
@@ -4544,7 +4545,7 @@ function dedupDietObj(diet) {
       // 拥有明确唯一标识 (uid/id) 时，仅在唯一标识相同时判定为重放并去重
       k = `uid:${uid}`;
     } else {
-      // 无唯一标识时的防呆兜底：仅在时间戳、餐别、菜名、热量、宏量及标题全部相同时才去重（杜绝无差别误杀同餐多份单品）
+      // 无唯一标识时的防呆兜底：对同餐单品内容相同的记录采用次序号（如 ${k}#2）放行，杜绝把合法的同秒多份单品（如两颗鸡蛋）静默当成网络重复丢弃
       const stdStamp = (() => {
         try {
           const ms = new Date(m.stamp || m.time).getTime();
@@ -4561,7 +4562,10 @@ function dedupDietObj(diet) {
       const cVal = m.carbs != null ? String(m.carbs) : "";
       const fVal = m.fat != null ? String(m.fat) : "";
       const rawTitle = String(m.rawTitle || "").trim();
-      k = `raw:${stdStamp}|${meal}|${dish}|${cal}|${price}|${pVal}|${cVal}|${fVal}|${rawTitle}`;
+      const baseKey = `raw:${stdStamp}|${meal}|${dish}|${cal}|${price}|${pVal}|${cVal}|${fVal}|${rawTitle}`;
+      const count = (rawCounts.get(baseKey) || 0) + 1;
+      rawCounts.set(baseKey, count);
+      k = count > 1 ? `${baseKey}#${count}` : baseKey;
     }
     if (seen.has(k)) continue;
     seen.add(k);
@@ -9324,39 +9328,73 @@ function calculateUserBmr(profile, targetDate) {
 }
 
 /**
- * 体脂秤去水纯脂肪能量动力学与自适应 BMR 计算 (calculateDynamicBmr)
- * 物理原理：
- * 1. 结合体脂秤电极生物电阻抗体脂率，解耦纯脂肪质量：FatMass = weight * (bodyFat / 100)；
- * 2. 纯脂肪组织能量密度恒定：ΔE_fat = ΔFatMass * 7700 kcal，彻底滤除体液水分震荡；
- * 3. 能量平衡闭环：ΔE_fat = Intake - (Adaptive_BMR + ActiveBurn)，反解出真实静态代谢；
- * 4. 安全门禁与平滑加权：数据量少时与 Mifflin-St Jeor 标准公式及硬件直采 BMR（约 1724 kcal）加权平滑；
- * 5. 硬限制偏离度在基线 ±12% 以内；
- * 6. 单向生效保护：仅在 effectiveDate（TODAY 起）生效，绝不逆向污染历史天。
+ * 体脂秤去脂体重 (LBM) Katch-McArdle 物理基底与自适应代谢动力学计算 (calculateDynamicBmr)
+ * 核心算法与数学规范：
+ * 1. Katch-McArdle 物理基底：
+ *    利用体脂秤测得的去脂体重 LBM = weight * (1 - bodyFat / 100)，
+ *    计算 BMR_KM = 370 + 21.6 * LBM；若无可用的体脂率数据，优雅平滑降级至 Mifflin-St Jeor 公式。
+ * 2. 14 天双重指数移动平均 (EWMA) 去噪：
+ *    对时序中的 weight, lbm, fatMass 建立 14 天加权移动平均 (alpha = 2 / (14 + 1) ≈ 0.1333)。
+ *    遇未上秤日自动以指数平滑延续，杜绝断崖。
+ * 3. 稳健回归斜率 (OLS Slope) 动力学：
+ *    对平滑后的纯脂肪质量时序进行普通最小二乘法 (OLS) 线性拟合，
+ *    求得真实日均脂肪变化斜率 daily_fat_change_kg，
+ *    日均脂肪能量变化 ΔE_fat = daily_fat_change_kg * 7700 kcal。
+ * 4. 能量平衡与贝叶斯融合：
+ *    用户契约：饮食“没记就是没吃 (0 kcal)”。
+ *    BMR_model = mean(Intake) - mean(Active) - ΔE_fat。
+ *    窗口满足 (>= 7 天) 时：BMR = round(0.70 * BMR_KM + 0.30 * BMR_model)；
+ *    样本较少时平滑收敛于 BMR_KM。
+ * 5. 安全门禁与历史不可变：
+ *    限幅在 baselineBmr ±12% 内；
+ *    单向生效保护：仅在 effectiveDate (2026-10-15 起) 生效，绝不逆向篡改历史天。
  */
 let _cachedDynBmr = null;
 let _cachedDynBmrKey = "";
 
 function calculateDynamicBmr(profile, options) {
   options = options || {};
-  const prof = profile || getUserProfile();
-  const baselineBmr = calculateUserBmr(prof);
+  const prof = profile || (typeof getUserProfile === "function" ? getUserProfile() : DEFAULT_USER_PROFILE);
+  const msjBmr = (typeof calculateUserBmr === "function") ? calculateUserBmr(prof) : 1844;
   const scaleM = (typeof getLatestScaleMetrics === "function") ? getLatestScaleMetrics() : null;
-  const hwBmr = (scaleM && scaleM.bmr) ? Number(scaleM.bmr) : 1724;
   const effectiveDate = "2026-10-15";
 
-  // 1. 提取带体脂率的有效称量记录时序
-  const records = [];
-  if (typeof TREND !== "undefined" && TREND && Array.isArray(TREND.full) && Array.isArray(TREND.weight)) {
-    TREND.full.forEach((dy, idx) => {
-      let w = (TREND.weight[idx] != null && TREND.weight[idx] > 0) ? Number(TREND.weight[idx]) : null;
-      let bf = (TREND.bodyFat && TREND.bodyFat[idx] != null && TREND.bodyFat[idx] > 0) ? Number(TREND.bodyFat[idx]) : null;
-      let intake = (TREND.dietKcal && TREND.dietKcal[idx] != null) ? Number(TREND.dietKcal[idx]) : 0;
-      let active = (TREND.activeBurn && TREND.activeBurn[idx] != null) ? Number(TREND.activeBurn[idx]) : 0;
+  // 1. Katch-McArdle 物理基底计算
+  const curWeight = (scaleM && scaleM.weight) ? Number(scaleM.weight) : (Number(prof.weight) || 79.4);
+  const curBodyFat = (scaleM && scaleM.bodyFat != null && Number(scaleM.bodyFat) > 0) ? Number(scaleM.bodyFat) : null;
+
+  let bmrKM = msjBmr;
+  if (curBodyFat != null && curBodyFat > 0 && curBodyFat < 100) {
+    const curLbm = curWeight * (1 - curBodyFat / 100);
+    bmrKM = Math.round(370 + 21.6 * curLbm);
+  }
+  const baselineBmr = bmrKM;
+
+  // 2. 提取时序数据并进行 14 天 EWMA 去噪
+  // alpha = 2 / (14 + 1) ≈ 0.13333333333333333
+  const alpha = 2 / (14 + 1);
+  const trendDays = (options.trend && Array.isArray(options.trend.full))
+    ? options.trend
+    : ((typeof TREND !== "undefined" && TREND && Array.isArray(TREND.full)) ? TREND : null);
+
+  const series = [];
+  if (trendDays && Array.isArray(trendDays.full) && trendDays.full.length > 0) {
+    let ewmaWeight = null;
+    let ewmaLbm = null;
+    let ewmaFatMass = null;
+
+    trendDays.full.forEach((dy, idx) => {
+      let rawW = (trendDays.weight && trendDays.weight[idx] != null && Number(trendDays.weight[idx]) > 0)
+        ? Number(trendDays.weight[idx])
+        : null;
+      let rawBf = (trendDays.bodyFat && trendDays.bodyFat[idx] != null && Number(trendDays.bodyFat[idx]) > 0)
+        ? Number(trendDays.bodyFat[idx])
+        : null;
 
       // 若当前遍历日为 TODAY，优先取 scaleM 实测
       if (typeof TODAY !== "undefined" && dy === TODAY && scaleM && scaleM.weight) {
-        w = scaleM.weight;
-        if (scaleM.bodyFat != null) bf = scaleM.bodyFat;
+        rawW = Number(scaleM.weight);
+        if (scaleM.bodyFat != null && Number(scaleM.bodyFat) > 0) rawBf = Number(scaleM.bodyFat);
       }
 
       // 检查 _dayCache 补充
@@ -9364,69 +9402,99 @@ function calculateDynamicBmr(profile, options) {
         const c = _dayCache.get(dy);
         const cb = (c && c.data && c.data.d && c.data.d.body) || (c && c.data && c.data.body) || (c && c.d && c.d.body) || (c && c.body);
         if (cb) {
-          if (cb.weight || cb.weight_kg) w = Number(cb.weight || cb.weight_kg);
-          if (cb.bodyFat != null && Number(cb.bodyFat) > 0) bf = Number(cb.bodyFat);
+          if (cb.weight || cb.weight_kg) rawW = Number(cb.weight || cb.weight_kg);
+          if (cb.bodyFat != null && Number(cb.bodyFat) > 0) rawBf = Number(cb.bodyFat);
         }
       }
 
-      if (w != null && w > 0 && bf != null && bf > 0) {
-        const fatMass = w * (bf / 100);
-        records.push({ day: dy, weight: w, bodyFat: bf, fatMass: fatMass, intake: intake, active: active });
+      // 饮食契约：“没记就是没吃 (0 kcal)”
+      const intake = (trendDays.dietKcal && trendDays.dietKcal[idx] != null) ? Math.max(0, Number(trendDays.dietKcal[idx])) : 0;
+      const active = (trendDays.activeBurn && trendDays.activeBurn[idx] != null) ? Math.max(0, Number(trendDays.activeBurn[idx])) : 0;
+
+      // EWMA 滤波更新：未上秤时自动以指数平滑延续，不出现断崖
+      if (rawW != null && rawW > 0) {
+        let rawFat = null;
+        let rawLbmVal = null;
+        if (rawBf != null && rawBf > 0 && rawBf < 100) {
+          rawFat = rawW * (rawBf / 100);
+          rawLbmVal = rawW * (1 - rawBf / 100);
+        } else if (ewmaWeight != null && ewmaFatMass != null) {
+          const prevFatRate = ewmaFatMass / ewmaWeight;
+          rawFat = rawW * prevFatRate;
+          rawLbmVal = rawW * (1 - prevFatRate);
+        }
+
+        if (ewmaWeight === null) {
+          ewmaWeight = rawW;
+          ewmaFatMass = rawFat != null ? rawFat : (rawW * (curBodyFat ? curBodyFat / 100 : 0.21));
+          ewmaLbm = rawLbmVal != null ? rawLbmVal : (ewmaWeight - ewmaFatMass);
+        } else {
+          ewmaWeight = alpha * rawW + (1 - alpha) * ewmaWeight;
+          if (rawFat != null) {
+            ewmaFatMass = alpha * rawFat + (1 - alpha) * ewmaFatMass;
+          }
+          if (rawLbmVal != null) {
+            ewmaLbm = alpha * rawLbmVal + (1 - alpha) * ewmaLbm;
+          } else {
+            ewmaLbm = ewmaWeight - ewmaFatMass;
+          }
+        }
+      }
+
+      if (ewmaWeight !== null && ewmaFatMass !== null) {
+        series.push({
+          day: dy,
+          weight: ewmaWeight,
+          lbm: ewmaLbm,
+          fatMass: ewmaFatMass,
+          intake: intake,
+          active: active
+        });
       }
     });
   }
 
-  // 2. 数据量判定与加权平滑
+  // 3. 稳健回归斜率 (OLS Slope) 动力学
   let rawBmr = baselineBmr;
   let status = "baseline";
 
-  if (records.length >= 2) {
-    const first = records[0];
-    const last = records[records.length - 1];
-    const d0 = new Date(first.day);
-    const d1 = new Date(last.day);
-    const spanDays = Math.max(1, Math.round((d1 - d0) / 86400000));
+  if (series.length >= 2) {
+    const t0 = new Date(series[0].day).getTime();
+    const xs = series.map(r => Math.round((new Date(r.day).getTime() - t0) / 86400000));
+    const ys = series.map(r => r.fatMass);
+    const n = series.length;
+    const spanDays = xs[xs.length - 1] - xs[0];
 
-    if (spanDays >= 2) {
-      const deltaFatKg = last.fatMass - first.fatMass;
-      const totalFatEnergy = deltaFatKg * 7700;
-      const avgDailyFatSurplus = totalFatEnergy / spanDays;
+    const meanX = xs.reduce((a, b) => a + b, 0) / n;
+    const meanY = ys.reduce((a, b) => a + b, 0) / n;
 
-      let sumIn = 0, sumAct = 0, dietDays = 0;
-      records.forEach(r => {
-        if (r.intake > 0) {
-          sumIn += r.intake;
-          sumAct += r.active;
-          dietDays++;
-        }
-      });
-
-      if (dietDays >= 2) {
-        const avgIn = sumIn / dietDays;
-        const avgAct = sumAct / dietDays;
-        const modelBmr = avgIn - avgAct - avgDailyFatSurplus;
-
-        // 根据样本成熟度加权平滑
-        const wModel = Math.min(0.40, (dietDays / 20) * 0.40);
-        const wHw = 0.45;
-        const wBase = Math.max(0, 1.0 - wModel - wHw);
-
-        rawBmr = Math.round(wModel * modelBmr + wHw * hwBmr + wBase * baselineBmr);
-        status = "calibrated";
-      } else {
-        rawBmr = Math.round(0.4 * hwBmr + 0.6 * baselineBmr);
-        status = "hybrid";
-      }
-    } else {
-      rawBmr = Math.round(0.4 * hwBmr + 0.6 * baselineBmr);
-      status = "hybrid";
+    let num = 0;
+    let den = 0;
+    for (let i = 0; i < n; i++) {
+      const dx = xs[i] - meanX;
+      num += dx * (ys[i] - meanY);
+      den += dx * dx;
     }
-  } else {
-    rawBmr = Math.round(0.4 * hwBmr + 0.6 * baselineBmr);
-    status = "hybrid";
+    const dailyFatChangeKg = den > 0 ? (num / den) : 0;
+    const deltaFatEnergy = dailyFatChangeKg * 7700; // ΔE_fat = daily_fat_change_kg * 7700 kcal
+
+    // 4. 能量平衡闭环与贝叶斯融合
+    const meanIntake = series.reduce((sum, r) => sum + r.intake, 0) / n;
+    const meanActive = series.reduce((sum, r) => sum + r.active, 0) / n;
+    const modelBmr = meanIntake - meanActive - deltaFatEnergy;
+
+    if (n >= 7 && spanDays >= 6) {
+      rawBmr = Math.round(0.70 * bmrKM + 0.30 * modelBmr);
+      status = "calibrated";
+    } else {
+      const wModel = Math.min(0.30, (n / 7) * 0.30);
+      const wKm = 1.0 - wModel;
+      rawBmr = Math.round(wKm * bmrKM + wModel * modelBmr);
+      status = "converging";
+    }
   }
 
-  // 3. 安全限幅门禁：硬限制在基线 ±12%
+  // 5. 安全限幅门禁：硬限制在基线 ±12%
   const minAllowed = Math.round(baselineBmr * 0.88);
   const maxAllowed = Math.round(baselineBmr * 1.12);
   const clampedBmr = Math.min(maxAllowed, Math.max(minAllowed, rawBmr));
@@ -9440,106 +9508,6 @@ function calculateDynamicBmr(profile, options) {
     status: status,
     restingPerHour: restingPerHour,
     effectiveDate: effectiveDate
-  };
-}
-
-/**
- * 长期体重变化与能量收支自适应估算静态消耗 (Adaptive BMR)
- * 物理与代谢动力学原理：ΔEnergy = Intake - Out = Intake - (Adaptive_BMR + ActiveBurn)
- * 1kg 真实人体脂肪组织约蕴含 7700 kcal 能量。
- * 
- * 严格安全与风控门禁（遵循用户指导「现在的数据太少了，要小心一点」）：
- * 1. 样本量门禁：有效称重天数 count < 14 天，或者时间跨度 span < 21 天，绝不启动估算，严格返回标准公式或实测 BMR；
- * 2. 连续性门禁：必须同时具备饮食热量和活动消耗记录；
- * 3. 幅度硬边界：自适应估算值与标准公式 BMR 偏离度严格限制在 ±15% 以内，防止脱水/暴饮暴食带来瞬时剧烈震荡。
- */
-function estimateAdaptiveBmr(trendDays, profile) {
-  const prof = profile || getUserProfile();
-  const baselineBmr = calculateUserBmr(prof);
-  if (!Array.isArray(trendDays) || trendDays.length < 14) {
-    return {
-      status: "insufficient_data",
-      bmr: baselineBmr,
-      confidence: 0,
-      reason: `数据积累中（目前有效 ${trendDays ? trendDays.length : 0}/14 天，跨度不足 21 天，保持物理直采/标准公式）`
-    };
-  }
-
-  // 提取有效称重日
-  const validWeights = [];
-  trendDays.forEach((x) => {
-    if (x && x.day && x.weight != null && x.weight > 0) {
-      validWeights.push({ day: x.day, weight: Number(x.weight), intake: Number(x.dietKcal) || 0, active: Number(x.activeBurn) || 0 });
-    }
-  });
-
-  if (validWeights.length < 14) {
-    return {
-      status: "insufficient_data",
-      bmr: baselineBmr,
-      confidence: Math.round((validWeights.length / 14) * 50),
-      reason: `有效称量仅 ${validWeights.length} 天，需至少 14 天长期实测`
-    };
-  }
-
-  const firstDay = new Date(validWeights[0].day);
-  const lastDay = new Date(validWeights[validWeights.length - 1].day);
-  const spanDays = Math.max(1, Math.round((lastDay - firstDay) / (1000 * 3600 * 24)));
-  if (spanDays < 21) {
-    return {
-      status: "insufficient_data",
-      bmr: baselineBmr,
-      confidence: Math.round((spanDays / 21) * 60),
-      reason: `时间跨度仅 ${spanDays} 天，需至少 21 天多周时序跨度`
-    };
-  }
-
-  // 计算体重净变化量（公斤）与日均能量差
-  const startWeight = validWeights[0].weight;
-  const endWeight = validWeights[validWeights.length - 1].weight;
-  const deltaWeightKg = endWeight - startWeight;
-  const totalWeightEnergyKcal = deltaWeightKg * 7700; // 7700 kcal / kg
-  const avgDailySurplusDeficit = totalWeightEnergyKcal / spanDays;
-
-  // 累计日均摄入与日均活动消耗
-  let sumIntake = 0, sumActive = 0, validDaysWithDiet = 0;
-  validWeights.forEach((w) => {
-    if (w.intake > 0) {
-      sumIntake += w.intake;
-      sumActive += w.active;
-      validDaysWithDiet++;
-    }
-  });
-
-  if (validDaysWithDiet < 10) {
-    return {
-      status: "insufficient_diet",
-      bmr: baselineBmr,
-      confidence: 30,
-      reason: "饮食记录天数不足，无法闭环能量天平平衡方程"
-    };
-  }
-
-  const avgIntake = sumIntake / validDaysWithDiet;
-  const avgActive = sumActive / validDaysWithDiet;
-  
-  // Adaptive_BMR = avgIntake - avgActive - avgDailySurplusDeficit
-  const rawAdaptiveBmr = Math.round(avgIntake - avgActive - avgDailySurplusDeficit);
-
-  // 硬核风控：限定在基线 ±15% 范围以内
-  const minAllowed = Math.round(baselineBmr * 0.85);
-  const maxAllowed = Math.round(baselineBmr * 1.15);
-  const clampedBmr = Math.min(maxAllowed, Math.max(minAllowed, rawAdaptiveBmr));
-
-  return {
-    status: "active",
-    bmr: clampedBmr,
-    rawBmr: rawAdaptiveBmr,
-    baselineBmr: baselineBmr,
-    confidence: Math.min(95, Math.round(60 + (validWeights.length / 30) * 35)),
-    spanDays: spanDays,
-    weightDiff: deltaWeightKg.toFixed(1),
-    clamped: clampedBmr !== rawAdaptiveBmr
   };
 }
 
@@ -12309,6 +12277,7 @@ async function render() {
               const rawMeals = d.diet.meals || [];
               const uniqueMeals = [];
               const seenMeals = new Set();
+              const rawCounts = new Map();
               for (const m of rawMeals) {
                 if (!m) continue;
                 const uid = (m.uid != null && String(m.uid).trim() !== "")
@@ -12326,7 +12295,10 @@ async function render() {
                       return m.stamp || m.time || "";
                     }
                   })();
-                  k = `raw:${normStamp}|${m.meal || ''}|${m.dish || ''}|${m.calories || 0}|${m.price != null ? m.price : ''}|${m.protein || 0}|${m.carbs || 0}|${m.fat || 0}|${m.rawTitle || ''}`;
+                  const baseKey = `raw:${normStamp}|${m.meal || ''}|${m.dish || ''}|${m.calories || 0}|${m.price != null ? m.price : ''}|${m.protein || 0}|${m.carbs || 0}|${m.fat || 0}|${m.rawTitle || ''}`;
+                  const count = (rawCounts.get(baseKey) || 0) + 1;
+                  rawCounts.set(baseKey, count);
+                  k = count > 1 ? `${baseKey}#${count}` : baseKey;
                 }
                 if (seenMeals.has(k)) continue;
                 seenMeals.add(k);
@@ -12351,6 +12323,7 @@ async function render() {
               const rawMeals = d.diet.meals || [];
               const uniqueMeals = [];
               const seenMeals = new Set();
+              const rawCounts = new Map();
               for (const m of rawMeals) {
                 if (!m) continue;
                 const uid = (m.uid != null && String(m.uid).trim() !== "")
@@ -12368,7 +12341,10 @@ async function render() {
                       return m.stamp || m.time || "";
                     }
                   })();
-                  k = `raw:${normStamp}|${m.meal || ''}|${m.dish || ''}|${m.calories || 0}|${m.price != null ? m.price : ''}|${m.protein || 0}|${m.carbs || 0}|${m.fat || 0}|${m.rawTitle || ''}`;
+                  const baseKey = `raw:${normStamp}|${m.meal || ''}|${m.dish || ''}|${m.calories || 0}|${m.price != null ? m.price : ''}|${m.protein || 0}|${m.carbs || 0}|${m.fat || 0}|${m.rawTitle || ''}`;
+                  const count = (rawCounts.get(baseKey) || 0) + 1;
+                  rawCounts.set(baseKey, count);
+                  k = count > 1 ? `${baseKey}#${count}` : baseKey;
                 }
                 if (seenMeals.has(k)) continue;
                 seenMeals.add(k);
@@ -15512,12 +15488,15 @@ async function addQuickFoodLog(day, qidx, btnEl) {
   const price = (q.price != null && !isNaN(q.price)) ? Number(q.price) : null;
   // 保证连续极速点击时时间戳单调递增，杜绝被去重逻辑误杀
   let nowMs = Date.now();
-  if (typeof window._lastFoodLogMs !== "undefined" && nowMs <= window._lastFoodLogMs) {
-    nowMs = window._lastFoodLogMs + 1000;
+  const lastMs = (typeof window !== "undefined" && window._lastFoodLogMs) ? window._lastFoodLogMs : 0;
+  if (nowMs <= lastMs) {
+    nowMs = lastMs + 1000;
   }
-  window._lastFoodLogMs = nowMs;
+  if (typeof window !== "undefined") window._lastFoodLogMs = nowMs;
   const now = new Date(nowMs);
   const nowH = now.getHours();
+  const pad2 = n => String(n).padStart(2, "0");
+  const stdHhmm = `${pad2(nowH)}:${pad2(now.getMinutes())}`;
   const today = (typeof TODAY !== "undefined" && TODAY)
     ? TODAY
     : new Date(Date.now() + 8 * 3600e3).toISOString().slice(0, 10);
@@ -15559,23 +15538,26 @@ async function addQuickFoodLog(day, qidx, btnEl) {
     const isBreakfastCandidate = isBreakfastFood && (!hasBreakfast || (!hasLunch && !hasDinner));
     if (nowH < 11 || isBreakfastCandidate) {
       mType = "早餐";
-      nowTime = (nowH < 11) ? now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : "08:30";
+      nowTime = (nowH < 11) ? stdHhmm : "08:30";
     } else if (nowH < 16) {
       mType = "午餐";
-      nowTime = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      nowTime = stdHhmm;
     } else if (nowH < 21) {
       mType = "晚餐";
-      nowTime = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      nowTime = stdHhmm;
     } else {
       mType = "夜宵";
-      nowTime = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      nowTime = stdHhmm;
     }
   }
 
-  // 严格落在当前查看日期 day，并支持连续点击单调递增
-  const sec = String(Math.floor((nowMs / 1000) % 60)).padStart(2, "0");
-  const stampDt = new Date(`${day}T${nowTime}:${sec}+08:00`);
-  const nowStamp = (!isNaN(stampDt.getTime())) ? stampDt.toISOString() : `${day}T${nowTime}:00+08:00`;
+  // 严格落在当前查看日期 day，并支持连续点击单调递增，生成严格符合 ISO 8601 的时间戳
+  const sec = pad2(Math.floor((nowMs / 1000) % 60));
+  const ms = String(nowMs % 1000).padStart(3, "0");
+  const stampDt = new Date(`${day}T${nowTime}:${sec}.${ms}+08:00`);
+  const nowStamp = (!isNaN(stampDt.getTime()))
+    ? stampDt.toISOString()
+    : `${day}T${nowTime}:${sec}.${ms}+08:00`;
   const uniqueUid = "fl_" + nowMs + "_" + Math.random().toString(36).slice(2, 8) + "_" + Math.floor(Math.random() * 10000).toString(16);
 
   // 1. 0ms 瞬间 Toast 弹出与即时响应 (Zero-Emoji)
