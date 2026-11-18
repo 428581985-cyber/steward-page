@@ -2396,8 +2396,8 @@ function roundMacro(n) {
 }
 window.roundMacro = roundMacro;
 
-const VERSION = "v0.43.12";
-var BUILD = "2026-11-18 22:58";
+const VERSION = "v0.43.13";
+var BUILD = "2026-11-18 23:49";
 
 /* 通用弹层：给"不是我这份数据"的内容用。
    ⚠️ 别和 openDay 抢 —— 那个是画时间线用的，要绑图例、缩放、重绘。
@@ -10652,6 +10652,62 @@ function estimateSubItemNutrition(subItems, totalKcal, totalP, totalC, totalF) {
   }));
 }
 
+/**
+ * buildDietCardViewModel: 纯函数计算饮食分组卡片视图模型
+ * @param {Object} grp 包含 mealChar, records, totalPrice, latestStamp 的分组对象
+ * @returns {Object} 结构化纯对象 ViewModel
+ */
+function buildDietCardViewModel(grp) {
+  const theme = getMealTheme(grp.mealChar);
+  const mealPriceTxt = grp.hasAnyPrice ? `￥${Number(grp.totalPrice.toFixed(1))}` : `￥0`;
+
+  let grpTotalKcal = 0;
+  let grpP = 0;
+  let grpC = 0;
+  let grpF = 0;
+  grp.records.forEach((m) => {
+    grpTotalKcal += Math.round(Number(m.calories) || 0);
+    grpP += Number(m.protein) || 0;
+    grpC += Number(m.carbs) || 0;
+    grpF += Number(m.fat) || 0;
+  });
+  grpP = typeof roundMacro === "function" ? roundMacro(grpP) : Math.round(grpP * 10) / 10;
+  grpC = typeof roundMacro === "function" ? roundMacro(grpC) : Math.round(grpC * 10) / 10;
+  grpF = typeof roundMacro === "function" ? roundMacro(grpF) : Math.round(grpF * 10) / 10;
+
+  let mealTimeStr = "";
+  if (grp.latestStamp) {
+    mealTimeStr = (typeof formatToBeijingHHMM === "function")
+      ? formatToBeijingHHMM(grp.latestStamp)
+      : (grp.latestStamp.includes("T") ? grp.latestStamp.split("T")[1].slice(0, 5) : "");
+  }
+
+  let totalItemCount = 0;
+  grp.records.forEach((m) => {
+    const sub = splitDishIntoItems(m.dish);
+    totalItemCount += (sub && sub.length > 0) ? sub.length : 1;
+  });
+
+  const hasSummary = totalItemCount > 1;
+
+  return {
+    mealChar: grp.mealChar,
+    theme,
+    mealTimeStr,
+    mealPriceTxt,
+    grpTotalKcal,
+    grpP,
+    grpC,
+    grpF,
+    totalItemCount,
+    hasSummary,
+    records: grp.records
+  };
+}
+
+if (typeof window !== "undefined") window.buildDietCardViewModel = buildDietCardViewModel; /* LINT:ALLOW_WINDOW */
+if (typeof global !== "undefined") global.buildDietCardViewModel = buildDietCardViewModel;
+
 /* 「更新于」显示的日期：部署时间 BUILD 的 mm/dd。 */
 function deployMD() {
   const s = String((typeof BUILD !== "undefined" && BUILD) ? BUILD : "").trim();
@@ -11236,37 +11292,18 @@ async function render() {
               });
 
               return mealGroups.map(grp => {
-                const theme = getMealTheme(grp.mealChar);
-                const mealPriceTxt = grp.hasAnyPrice ? `￥${Number(grp.totalPrice.toFixed(1))}` : `￥0`;
-
-                // 反馈 5：聚合计算该餐总热量、蛋白质、碳水、脂肪与就餐时刻
-                let grpTotalKcal = 0;
-                let grpP = 0;
-                let grpC = 0;
-                let grpF = 0;
-                grp.records.forEach((m) => {
-                  grpTotalKcal += Math.round(Number(m.calories) || 0);
-                  grpP += Number(m.protein) || 0;
-                  grpC += Number(m.carbs) || 0;
-                  grpF += Number(m.fat) || 0;
-                });
-                grpP = typeof roundMacro === "function" ? roundMacro(grpP) : Math.round(grpP * 10) / 10;
-                grpC = typeof roundMacro === "function" ? roundMacro(grpC) : Math.round(grpC * 10) / 10;
-                grpF = typeof roundMacro === "function" ? roundMacro(grpF) : Math.round(grpF * 10) / 10;
-
-                let mealTimeStr = "";
-                if (grp.latestStamp) {
-                  mealTimeStr = (typeof formatToBeijingHHMM === "function")
-                    ? formatToBeijingHHMM(grp.latestStamp)
-                    : (grp.latestStamp.includes("T") ? grp.latestStamp.split("T")[1].slice(0, 5) : "");
-                }
-
-                // 统计当前就餐分组中的食物条目总数（若有菜品包含子条目则累加子条目数）
-                let totalItemCount = 0;
-                grp.records.forEach((m) => {
-                  const sub = splitDishIntoItems(m.dish);
-                  totalItemCount += (sub && sub.length > 0) ? sub.length : 1;
-                });
+                const vm = buildDietCardViewModel(grp);
+                const {
+                  theme,
+                  mealPriceTxt,
+                  grpTotalKcal,
+                  grpP,
+                  grpC,
+                  grpF,
+                  mealTimeStr,
+                  totalItemCount,
+                  hasSummary
+                } = vm;
 
                 // 渲染右侧所有食物条目
                 const rightRowsHTML = grp.records.map((m, rIdx) => {
@@ -16690,6 +16727,7 @@ window.calculateDynamicBmr = calculateDynamicBmr;
 window.openColorDiceModal = openColorDiceModal;
 window.openCatColorDiceModal = openCatColorDiceModal;
 window.openPlaceColorDiceModal = openPlaceColorDiceModal;
+window.buildDietCardViewModel = buildDietCardViewModel;
 
 /* PWA 安装资格 + 离线缓存：Service Worker 的注册已前移到 src/template.html
    —— 模板在 918KB 主脚本之前解析，注册得更早；这里不再重复注册。 */
